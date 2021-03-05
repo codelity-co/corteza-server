@@ -3,6 +3,12 @@ package service
 import (
 	"context"
 	"fmt"
+
+	rand2 "math/rand"
+	"regexp"
+	"strconv"
+	"time"
+
 	"github.com/cortezaproject/corteza-server/pkg/actionlog"
 	internalAuth "github.com/cortezaproject/corteza-server/pkg/auth"
 	"github.com/cortezaproject/corteza-server/pkg/errors"
@@ -14,13 +20,10 @@ import (
 	"github.com/cortezaproject/corteza-server/store"
 	"github.com/cortezaproject/corteza-server/system/service/event"
 	"github.com/cortezaproject/corteza-server/system/types"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/dgryski/dgoogauth"
 	"github.com/markbates/goth"
 	"golang.org/x/crypto/bcrypt"
-	rand2 "math/rand"
-	"regexp"
-	"strconv"
-	"time"
 )
 
 type (
@@ -424,7 +427,7 @@ func (svc auth) InternalLogin(ctx context.Context, email string, password string
 
 	err = func() error {
 		if !svc.settings.Auth.Internal.Enabled {
-			return AuthErrInteralLoginDisabledByConfig()
+			return AuthErrInternalLoginDisabledByConfig()
 		}
 
 		if !reEmail.MatchString(email) {
@@ -488,7 +491,7 @@ func (svc auth) SetPassword(ctx context.Context, userID uint64, password string)
 
 	err = func() error {
 		if !svc.settings.Auth.Internal.Enabled {
-			return AuthErrInteralLoginDisabledByConfig(aam)
+			return AuthErrInternalLoginDisabledByConfig(aam)
 		}
 
 		if !svc.CheckPasswordStrength(password) {
@@ -550,7 +553,7 @@ func (svc auth) ChangePassword(ctx context.Context, userID uint64, oldPassword, 
 
 	err = func() error {
 		if !svc.settings.Auth.Internal.Enabled {
-			return AuthErrInteralLoginDisabledByConfig(aam)
+			return AuthErrInternalLoginDisabledByConfig(aam)
 		}
 
 		if len(oldPassword) == 0 {
@@ -584,6 +587,8 @@ func (svc auth) ChangePassword(ctx context.Context, userID uint64, oldPassword, 
 
 		return nil
 	}()
+
+	spew.Dump("err here", err)
 
 	return svc.recordAction(ctx, aam, AuthActionChangePassword, err)
 }
@@ -794,7 +799,7 @@ func (svc auth) sendPasswordResetToken(ctx context.Context, u *types.User) (err 
 	if err != nil {
 		return err
 	}
-
+	spew.Dump("nots", svc.notifications)
 	return svc.notifications.PasswordReset(ctx, notificationLang, u.Email, token)
 }
 
