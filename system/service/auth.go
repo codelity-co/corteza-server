@@ -494,6 +494,10 @@ func (svc auth) SetPassword(ctx context.Context, userID uint64, password string)
 			return AuthErrInternalLoginDisabledByConfig(aam)
 		}
 
+		if !svc.settings.Auth.Internal.PasswordReset.Enabled {
+			return AuthErrPasswordResetDisabledByConfig(aam)
+		}
+
 		if !svc.CheckPasswordStrength(password) {
 			return AuthErrPasswordNotSecure(aam)
 		}
@@ -799,7 +803,7 @@ func (svc auth) sendPasswordResetToken(ctx context.Context, u *types.User) (err 
 	if err != nil {
 		return err
 	}
-	spew.Dump("nots", svc.notifications)
+
 	return svc.notifications.PasswordReset(ctx, notificationLang, u.Email, token)
 }
 

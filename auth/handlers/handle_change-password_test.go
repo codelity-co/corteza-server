@@ -285,12 +285,42 @@ func makeMockAuthService(ctx context.Context) *mockAuthService {
 	return &svc
 }
 
+func makeMockAuthService2(ctx context.Context, storer store.Storer) *mockAuthService {
+	service.DefaultStore = storer
+	service.DefaultAuthNotification = mockNotificationService{
+		settings: service.CurrentSettings,
+		opt:      options.AuthOpt{},
+	}
+
+	if err := store.Upgrade(ctx, zap.NewNop(), storer); err != nil {
+		panic(err)
+	}
+
+	serviceAuth := service.Auth()
+
+	svc := mockAuthService{
+		authService: serviceAuth,
+		settings:    service.CurrentSettings,
+		providerValidator: func(s string) error {
+			// All providers are valid.
+			return nil
+		},
+		store: storer,
+	}
+
+	return &svc
+}
+
 func makeMockUser(ctx context.Context) *types.User {
 	return &types.User{
 		ID:       1,
 		Username: "mock.user",
 		Email:    "mockuser@example.tld",
 	}
+}
+
+func (ma mockAuthService) ValidatePasswordResetToken(ctx context.Context, token string) (*types.User, error) {
+	return &types.User{ID: 123}, nil
 }
 
 func (m mockNotificationService) EmailConfirmation(ctx context.Context, lang string, emailAddress string, url string) error {
