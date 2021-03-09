@@ -21,10 +21,7 @@ func Test_logoutProc(t *testing.T) {
 		rq       = require.New(t)
 		user     = makeMockUser(ctx)
 
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-		}
+		req = &http.Request{PostForm: url.Values{"back": []string{"/back"}}}
 
 		authService  *mockAuthService
 		authHandlers *AuthHandlers
@@ -33,14 +30,11 @@ func Test_logoutProc(t *testing.T) {
 
 	mem := initStore(ctx, t)
 
+	authSettings := &settings.Settings{}
 	service.CurrentSettings = &types.AppSettings{}
 	service.CurrentSettings.Auth.Internal.Enabled = true
 
-	authSettings := &settings.Settings{}
-
 	authService = prepareClientAuthService(ctx, mem, user, memStore)
-	req.PostForm.Add("back", "/back")
-
 	authReq = prepareClientAuthReq(ctx, req, user, memStore)
 	authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 

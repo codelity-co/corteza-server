@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -12,10 +11,8 @@ import (
 	"github.com/cortezaproject/corteza-server/auth/settings"
 	"github.com/cortezaproject/corteza-server/system/service"
 	"github.com/cortezaproject/corteza-server/system/types"
-	"github.com/gorilla/sessions"
 	"github.com/quasoft/memstore"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 )
 
 type (
@@ -31,10 +28,7 @@ func Test_loginForm_setValues(t *testing.T) {
 		memStore = memstore.NewMemStore()
 		user     = makeMockUser(ctx)
 
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-		}
+		req = &http.Request{}
 
 		authService  *mockAuthService
 		authHandlers *AuthHandlers
@@ -83,13 +77,7 @@ func Test_loginProc(t *testing.T) {
 		authSettings = &settings.Settings{}
 
 		rq = require.New(t)
-	)
 
-	mem := initStore(ctx, t)
-
-	service.CurrentSettings = &types.AppSettings{}
-
-	var (
 		tcc = []testingExpect{
 			{
 				name:    "successful login",
@@ -160,6 +148,10 @@ func Test_loginProc(t *testing.T) {
 		}
 	)
 
+	mem := initStore(ctx, t)
+
+	service.CurrentSettings = &types.AppSettings{}
+
 	for _, tc := range tcc {
 		t.Run(tc.name, func(t *testing.T) {
 			// reset from previous
@@ -184,60 +176,6 @@ func Test_loginProc(t *testing.T) {
 			rq.Equal(tc.link, authReq.RedirectTo)
 		})
 	}
-	// t.Fail()
-}
-
-func Test_loginProc_successfulLoginOauth2Params(t *testing.T) {
-	var (
-		ctx      = context.Background()
-		memStore = memstore.NewMemStore()
-		rq       = require.New(t)
-		user     = makeMockUser(ctx)
-
-		req         *http.Request
-		authService *mockAuthService
-	)
-
-	req = &http.Request{
-		Header:   http.Header{},
-		PostForm: make(url.Values),
-	}
-
-	req.PostForm.Add("email", "mockuser@example.tld")
-	req.PostForm.Add("password", "an_old_password_of_mine")
-
-	service.CurrentSettings = &types.AppSettings{}
-	service.CurrentSettings.Auth.Internal.Enabled = true
-
-	authService = makeMockAuthService(ctx)
-	authService.store.TruncateUsers(ctx)
-	authService.store.CreateUser(ctx, user)
-	authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
-
-	authUser := request.NewAuthUser(&settings.Settings{}, user, true, time.Duration(time.Hour))
-
-	h := AuthHandlers{
-		Log:         zap.NewNop(),
-		AuthService: authService,
-	}
-
-	sess := sessions.NewSession(memStore, "session")
-	sess.Values = map[interface{}]interface{}{"oauth2AuthParams": url.Values{}}
-
-	authReq := request.AuthReq{
-		Request:  req,
-		AuthUser: authUser,
-		Session:  sess,
-		Response: httptest.NewRecorder(),
-		Data:     make(map[string]interface{}),
-	}
-
-	err := h.loginProc(&authReq)
-
-	rq.NoError(err)
-	rq.Equal(GetLinks().OAuth2AuthorizeClient, authReq.RedirectTo)
-	rq.Equal(map[string]string(nil), authReq.GetKV())
-	rq.Equal([]request.Alert{{Type: "primary", Text: "You are now logged-in", Html: ""}}, authReq.NewAlerts)
 }
 
 // wrapper around time.Now() that will aid service testing
