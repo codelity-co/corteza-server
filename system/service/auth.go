@@ -20,7 +20,6 @@ import (
 	"github.com/cortezaproject/corteza-server/store"
 	"github.com/cortezaproject/corteza-server/system/service/event"
 	"github.com/cortezaproject/corteza-server/system/types"
-	"github.com/davecgh/go-spew/spew"
 	"github.com/dgryski/dgoogauth"
 	"github.com/markbates/goth"
 	"golang.org/x/crypto/bcrypt"
@@ -451,7 +450,6 @@ func (svc auth) InternalLogin(ctx context.Context, email string, password string
 
 		// Update audit meta with found user
 		ctx = internalAuth.SetIdentityToContext(ctx, u)
-
 		cc, _, err = store.SearchCredentials(ctx, svc.store, types.CredentialsFilter{OwnerID: u.ID, Kind: credentialsTypePassword})
 		if err != nil {
 			return err
@@ -492,10 +490,6 @@ func (svc auth) SetPassword(ctx context.Context, userID uint64, password string)
 	err = func() error {
 		if !svc.settings.Auth.Internal.Enabled {
 			return AuthErrInternalLoginDisabledByConfig(aam)
-		}
-
-		if !svc.settings.Auth.Internal.PasswordReset.Enabled {
-			return AuthErrPasswordResetDisabledByConfig(aam)
 		}
 
 		if !svc.CheckPasswordStrength(password) {
@@ -591,8 +585,6 @@ func (svc auth) ChangePassword(ctx context.Context, userID uint64, oldPassword, 
 
 		return nil
 	}()
-
-	spew.Dump("err here", err)
 
 	return svc.recordAction(ctx, aam, AuthActionChangePassword, err)
 }

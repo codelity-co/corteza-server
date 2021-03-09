@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/cortezaproject/corteza-server/auth/request"
 	"github.com/cortezaproject/corteza-server/auth/settings"
@@ -31,9 +32,10 @@ type (
 		name        string
 		payload     interface{}
 		link        string
-		err         error
+		err         string
 		alerts      []request.Alert
 		userService userService
+		fn          func()
 	}
 )
 
@@ -60,9 +62,11 @@ func Test_profileForm_setValues(t *testing.T) {
 	service.CurrentSettings = &types.AppSettings{}
 	service.CurrentSettings.Auth.Internal.Enabled = true
 
+	authSettings := &settings.Settings{}
+
 	authService = prepareClientAuthService(ctx, mem, user, memStore)
 	authReq = prepareClientAuthReq(ctx, req, user, memStore)
-	authHandlers = prepareClientAuthHandlers(ctx, authService)
+	authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
 	payload := map[string]string{"key": "value"}
 	authReq.SetKV(payload)
@@ -86,10 +90,7 @@ func Test_profileForm(t *testing.T) {
 		memStore = memstore.NewMemStore()
 		user     = makeMockUser(ctx)
 
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-		}
+		req = &http.Request{}
 
 		authService  *mockAuthService
 		authHandlers *AuthHandlers
@@ -106,62 +107,64 @@ func Test_profileForm(t *testing.T) {
 	tcc := []testingExpect{
 		{
 			name:        "proc",
-			err:         nil,
+			err:         "",
 			userService: &userServiceUpdateSuccess{},
 			alerts:      []request.Alert{{Type: "primary", Text: "Profile successfully updated.", Html: ""}},
 			link:        GetLinks().Profile,
 		},
 		{
 			name:        "proc invalid ID",
-			err:         nil,
+			err:         "invalid ID",
 			userService: &userServiceUpdateInvalidID{},
-			alerts:      []request.Alert(nil),
-			link:        GetLinks().Signup,
+			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:        GetLinks().Profile,
 		},
 		{
 			name:        "proc invalid handle",
-			err:         nil,
+			err:         "invalid handle",
 			userService: &userServiceUpdateInvalidHandle{},
-			alerts:      []request.Alert(nil),
-			link:        GetLinks().Signup,
+			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:        GetLinks().Profile,
 		},
 		{
 			name:        "proc invalid email",
-			err:         nil,
+			err:         "invalid email",
 			userService: &userServiceUpdateInvalidEmail{},
-			alerts:      []request.Alert(nil),
-			link:        GetLinks().Signup,
+			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:        GetLinks().Profile,
 		},
 		{
 			name:        "proc handle not unique",
-			err:         nil,
+			err:         "handle not unique",
 			userService: &userServiceUpdateHandleNotUnique{},
-			alerts:      []request.Alert(nil),
-			link:        GetLinks().Signup,
+			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:        GetLinks().Profile,
 		},
 		{
 			name:        "proc not allowed to update",
-			err:         nil,
+			err:         "not allowed to update this user",
 			userService: &userServiceUpdateNotAllowedToUpdate{},
-			alerts:      []request.Alert(nil),
-			link:        GetLinks().Signup,
+			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:        GetLinks().Profile,
 		},
 	}
 
 	for _, tc := range tcc {
 		t.Run(tc.name, func(t *testing.T) {
+			authSettings := &settings.Settings{}
+
 			authService = prepareClientAuthService(ctx, mem, user, memStore)
 			authReq = prepareClientAuthReq(ctx, req, user, memStore)
-			authHandlers = prepareClientAuthHandlers(ctx, authService)
+			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
 			authHandlers.UserService = tc.userService
 			authService.store.TruncateUsers(ctx)
 			authService.store.CreateUser(ctx, user)
 			authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
 
-			err := authHandlers.profileProc(authReq)
+			authHandlers.profileProc(authReq)
 
-			rq.Equal(tc.err, err)
+			rq.Equal(tc.err, authReq.GetKV()["error"])
 			rq.Equal(tc.alerts, authReq.NewAlerts)
 			rq.Equal(tc.link, authReq.RedirectTo)
 		})
@@ -169,9 +172,18 @@ func Test_profileForm(t *testing.T) {
 }
 
 func prepareClientAuthReq(ctx context.Context, req *http.Request, user *types.User, memStore *memstore.MemStore) *request.AuthReq {
+	// todo use parameter for settings
+	s := &settings.Settings{}
+
+	s.MultiFactor.EmailOTP.Enabled = true
+	s.MultiFactor.EmailOTP.Enforced = true
+	s.MultiFactor.TOTP.Enabled = true
+
+	authUser := request.NewAuthUser(s, user, true, time.Duration(time.Hour))
+
 	return &request.AuthReq{
 		Request:  req,
-		User:     user,
+		AuthUser: authUser,
 		Session:  sessions.NewSession(memStore, "session"),
 		Response: httptest.NewRecorder(),
 		Data:     make(map[string]interface{}),
@@ -214,10 +226,11 @@ func prepareClientAuthService(ctx context.Context, storer store.Storer, user *ty
 	return authService
 }
 
-func prepareClientAuthHandlers(ctx context.Context, authService *mockAuthService) *AuthHandlers {
+func prepareClientAuthHandlers(ctx context.Context, authService *mockAuthService, s *settings.Settings) *AuthHandlers {
 	return &AuthHandlers{
 		Log:         zap.NewNop(),
 		AuthService: authService,
+		Settings:    s,
 	}
 }
 

@@ -6,8 +6,10 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/cortezaproject/corteza-server/auth/request"
+	"github.com/cortezaproject/corteza-server/auth/settings"
 	"github.com/cortezaproject/corteza-server/pkg/options"
 	"github.com/cortezaproject/corteza-server/store"
 	"github.com/cortezaproject/corteza-server/store/sqlite3"
@@ -87,7 +89,6 @@ func Test_changePasswordProc(t *testing.T) {
 		rq       = require.New(t)
 		user     = makeMockUser(ctx)
 
-		userReq     *types.User
 		req         *http.Request
 		authService *mockAuthService
 
@@ -100,8 +101,6 @@ func Test_changePasswordProc(t *testing.T) {
 				name:   "provided password is not secure",
 				expect: map[string]string{"error": "provided password is not secure; use longer password with more non-alphanumeric character"},
 				prepareFn: func() {
-					userReq = user
-
 					req = &http.Request{
 						Header:   http.Header{},
 						PostForm: make(url.Values),
@@ -118,8 +117,6 @@ func Test_changePasswordProc(t *testing.T) {
 				name:   "internal login is not enabled",
 				expect: map[string]string{"error": "internal login (username/password) is disabled"},
 				prepareFn: func() {
-					userReq = user
-
 					req = &http.Request{
 						Header:   http.Header{},
 						PostForm: make(url.Values),
@@ -136,8 +133,6 @@ func Test_changePasswordProc(t *testing.T) {
 				name:   "password change failed old password does not match",
 				expect: map[string]string{"error": "failed to change password, old password does not match"},
 				prepareFn: func() {
-					userReq = user
-
 					req = &http.Request{
 						Header:   http.Header{},
 						PostForm: make(url.Values),
@@ -154,11 +149,11 @@ func Test_changePasswordProc(t *testing.T) {
 				name:   "password change failed for unknown user",
 				expect: map[string]string{"error": "failed to change password for the unknown user"},
 				prepareFn: func() {
-					userReq = &types.User{
-						ID:       2,
-						Username: "mock.user",
-						Email:    "mockuser@example.tld",
-					}
+					// userReq = &types.User{
+					// 	ID:       2,
+					// 	Username: "mock.user",
+					// 	Email:    "mockuser@example.tld",
+					// }
 
 					req = &http.Request{
 						Header:   http.Header{},
@@ -179,6 +174,9 @@ func Test_changePasswordProc(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.prepareFn()
 
+			authUser := request.NewAuthUser(&settings.Settings{}, user, true, time.Duration(time.Hour))
+			// spew.Dump("au", authUser)
+
 			authService = makeMockAuthService(ctx)
 			authService.store.TruncateUsers(ctx)
 			authService.store.CreateUser(ctx, user)
@@ -191,7 +189,7 @@ func Test_changePasswordProc(t *testing.T) {
 
 			authReq := request.AuthReq{
 				Request:  req,
-				User:     userReq,
+				AuthUser: authUser,
 				Session:  sessions.NewSession(memStore, "session"),
 				Response: httptest.NewRecorder(),
 				Data:     make(map[string]interface{}),
@@ -221,6 +219,8 @@ func Test_changePasswordFormProc_successfulyChanged(t *testing.T) {
 		PostForm: url.Values{},
 	}
 
+	authUser := request.NewAuthUser(&settings.Settings{}, user, true, time.Duration(time.Hour))
+
 	req.PostForm.Add("oldPassword", "an_old_password_of_mine")
 	req.PostForm.Add("newPassword", "test1")
 
@@ -239,7 +239,7 @@ func Test_changePasswordFormProc_successfulyChanged(t *testing.T) {
 
 	authReq := request.AuthReq{
 		Request:  req,
-		User:     user,
+		AuthUser: authUser,
 		Session:  sessions.NewSession(memStore, "session"),
 		Response: httptest.NewRecorder(),
 		Data:     make(map[string]interface{}),
@@ -312,15 +312,19 @@ func makeMockAuthService2(ctx context.Context, storer store.Storer) *mockAuthSer
 }
 
 func makeMockUser(ctx context.Context) *types.User {
-	return &types.User{
-		ID:       1,
-		Username: "mock.user",
-		Email:    "mockuser@example.tld",
-	}
+	u := &types.User{ID: 1, Username: "mock.user", Email: "mockuser@example.tld", Meta: &types.UserMeta{}}
+	u.Meta.SecurityPolicy.MFA.EnforcedEmailOTP = true
+	u.Meta.SecurityPolicy.MFA.EnforcedTOTP = false
+
+	return u
 }
 
 func (ma mockAuthService) ValidatePasswordResetToken(ctx context.Context, token string) (*types.User, error) {
 	return &types.User{ID: 123}, nil
+}
+
+func (ma mockAuthService) SendEmailOTP(ctx context.Context) error {
+	return nil
 }
 
 func (m mockNotificationService) EmailConfirmation(ctx context.Context, lang string, emailAddress string, url string) error {
@@ -328,5 +332,9 @@ func (m mockNotificationService) EmailConfirmation(ctx context.Context, lang str
 }
 
 func (m mockNotificationService) PasswordReset(ctx context.Context, lang string, emailAddress string, url string) error {
+	return nil
+}
+
+func (m mockNotificationService) EmailOTP(ctx context.Context, lang string, emailAddress string, otp string) error {
 	return nil
 }
