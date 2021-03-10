@@ -20,151 +20,191 @@ import (
 	"go.uber.org/zap"
 )
 
-type (
-	userServiceUpdateSuccess            struct{}
-	userServiceUpdateInvalidID          struct{}
-	userServiceUpdateInvalidHandle      struct{}
-	userServiceUpdateInvalidEmail       struct{}
-	userServiceUpdateHandleNotUnique    struct{}
-	userServiceUpdateNotAllowedToUpdate struct{}
-
-	testingExpect struct {
-		name        string
-		payload     interface{}
-		link        string
-		err         string
-		alerts      []request.Alert
-		userService userService
-		fn          func()
-	}
-)
-
-func Test_profileForm_setValues(t *testing.T) {
-	var (
-		ctx      = context.Background()
-		memStore = memstore.NewMemStore()
-		user     = makeMockUser(ctx)
-
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-		}
-
-		authService  *mockAuthService
-		authHandlers *AuthHandlers
-		authReq      *request.AuthReq
-
-		rq = require.New(t)
-	)
-
-	mem := initStore(ctx, t)
-
-	service.CurrentSettings = &types.AppSettings{}
-	service.CurrentSettings.Auth.Internal.Enabled = true
-
-	authSettings := &settings.Settings{}
-
-	authService = prepareClientAuthService(ctx, mem, user, memStore)
-	authReq = prepareClientAuthReq(ctx, req, user, memStore)
-	authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
-
-	payload := map[string]string{"key": "value"}
-	authReq.SetKV(payload)
-	authReq.Data = make(map[string]interface{})
-
-	authHandlers.Settings = &settings.Settings{
-		EmailConfirmationRequired: true,
-	}
-
-	err := authHandlers.profileForm(authReq)
-
-	rq.NoError(err)
-	rq.Equal(TmplProfile, authReq.Template)
-	rq.Equal(payload, authReq.Data["form"])
-	rq.Equal(true, authReq.Data["emailConfirmationRequired"])
-}
-
 func Test_profileForm(t *testing.T) {
 	var (
 		ctx      = context.Background()
 		memStore = memstore.NewMemStore()
 		user     = makeMockUser(ctx)
 
-		req = &http.Request{}
+		req = &http.Request{
+			URL: &url.URL{},
+		}
 
-		authService  *mockAuthService
+		authService  authService
 		authHandlers *AuthHandlers
 		authReq      *request.AuthReq
+
+		authSettings = &settings.Settings{
+			EmailConfirmationRequired: false,
+		}
 
 		rq = require.New(t)
 	)
 
-	mem := initStore(ctx, t)
+	authReq = prepareClientAuthReq(ctx, req, user, memStore)
+	authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
-	service.CurrentSettings = &types.AppSettings{}
-	service.CurrentSettings.Auth.Internal.Enabled = true
+	userForm := map[string]string{
+		"email":  user.Email,
+		"handle": user.Handle,
+		"name":   user.Name,
+	}
+
+	authReq.SetKV(map[string]string{})
+
+	err := authHandlers.profileForm(authReq)
+
+	rq.NoError(err)
+	rq.Equal(TmplProfile, authReq.Template)
+	rq.Equal(authReq.Data["form"], userForm)
+	rq.Equal(authReq.Data["emailConfirmationRequired"], false)
+}
+
+func Test_profileFormProc(t *testing.T) {
+	var (
+		ctx      = context.Background()
+		memStore = memstore.NewMemStore()
+		user     = makeMockUser(ctx)
+
+		req = &http.Request{
+			PostForm: url.Values{},
+		}
+
+		authService  authService
+		userService  userService
+		authHandlers *AuthHandlers
+		authReq      *request.AuthReq
+
+		authSettings = &settings.Settings{}
+
+		rq = require.New(t)
+	)
 
 	tcc := []testingExpect{
 		{
-			name:        "proc",
-			err:         "",
-			userService: &userServiceUpdateSuccess{},
-			alerts:      []request.Alert{{Type: "primary", Text: "Profile successfully updated.", Html: ""}},
-			link:        GetLinks().Profile,
+			name:    "success",
+			err:     "",
+			alerts:  []request.Alert{{Type: "primary", Text: "Profile successfully updated.", Html: ""}},
+			link:    GetLinks().Profile,
+			payload: map[string]string(nil),
+			fn: func() {
+				req.PostForm.Add("handle", "handle")
+				req.PostForm.Add("name", "name")
+
+				userService = &userServiceMocked{
+					update: func(c context.Context, u *types.User) (*types.User, error) {
+						u = makeMockUser(ctx)
+						u.SetRoles([]uint64{})
+
+						return u, nil
+					},
+				}
+			},
 		},
 		{
-			name:        "proc invalid ID",
-			err:         "invalid ID",
-			userService: &userServiceUpdateInvalidID{},
-			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
-			link:        GetLinks().Profile,
+			name:    "proc invalid ID",
+			err:     "",
+			alerts:  []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:    GetLinks().Profile,
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid ID", "handle": "handle", "name": "name"},
+			fn: func() {
+				req.PostForm.Add("handle", "handle")
+				req.PostForm.Add("name", "name")
+
+				userService = &userServiceMocked{
+					update: func(c context.Context, u *types.User) (*types.User, error) {
+						return nil, service.UserErrInvalidID()
+					},
+				}
+			},
 		},
 		{
-			name:        "proc invalid handle",
-			err:         "invalid handle",
-			userService: &userServiceUpdateInvalidHandle{},
-			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
-			link:        GetLinks().Profile,
+			name:    "proc invalid handle",
+			err:     "",
+			alerts:  []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:    GetLinks().Profile,
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid handle", "handle": "handle", "name": "name"},
+			fn: func() {
+				req.PostForm.Add("handle", "handle")
+				req.PostForm.Add("name", "name")
+
+				userService = &userServiceMocked{
+					update: func(c context.Context, u *types.User) (*types.User, error) {
+						return nil, service.UserErrInvalidHandle()
+					},
+				}
+			},
 		},
 		{
-			name:        "proc invalid email",
-			err:         "invalid email",
-			userService: &userServiceUpdateInvalidEmail{},
-			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
-			link:        GetLinks().Profile,
+			name:    "proc invalid email",
+			err:     "",
+			alerts:  []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:    GetLinks().Profile,
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid email", "handle": "handle", "name": "name"},
+			fn: func() {
+				req.PostForm.Add("handle", "handle")
+				req.PostForm.Add("name", "name")
+
+				userService = &userServiceMocked{
+					update: func(c context.Context, u *types.User) (*types.User, error) {
+						return nil, service.UserErrInvalidEmail()
+					},
+				}
+			},
 		},
 		{
-			name:        "proc handle not unique",
-			err:         "handle not unique",
-			userService: &userServiceUpdateHandleNotUnique{},
-			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
-			link:        GetLinks().Profile,
+			name:    "proc handle not unique",
+			err:     "",
+			alerts:  []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:    GetLinks().Profile,
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "handle not unique", "handle": "handle", "name": "name"},
+			fn: func() {
+				req.PostForm.Add("handle", "handle")
+				req.PostForm.Add("name", "name")
+
+				userService = &userServiceMocked{
+					update: func(c context.Context, u *types.User) (*types.User, error) {
+						return nil, service.UserErrHandleNotUnique()
+					},
+				}
+			},
 		},
 		{
-			name:        "proc not allowed to update",
-			err:         "not allowed to update this user",
-			userService: &userServiceUpdateNotAllowedToUpdate{},
-			alerts:      []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
-			link:        GetLinks().Profile,
+			name:    "not allowed to update this user",
+			err:     "",
+			alerts:  []request.Alert{{Type: "danger", Text: "Could not update profile due to input errors", Html: ""}},
+			link:    GetLinks().Profile,
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "not allowed to update this user", "handle": "handle", "name": "name"},
+			fn: func() {
+				req.PostForm.Add("handle", "handle")
+				req.PostForm.Add("name", "name")
+
+				userService = &userServiceMocked{
+					update: func(c context.Context, u *types.User) (*types.User, error) {
+						return nil, service.UserErrNotAllowedToUpdate()
+					},
+				}
+			},
 		},
 	}
 
 	for _, tc := range tcc {
 		t.Run(tc.name, func(t *testing.T) {
-			authSettings := &settings.Settings{}
+			// reset from previous
+			req.Form = url.Values{}
+			req.PostForm = url.Values{}
 
-			authService = prepareClientAuthService(ctx, mem, user, memStore)
+			tc.fn()
+
 			authReq = prepareClientAuthReq(ctx, req, user, memStore)
 			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
+			authHandlers.UserService = userService
 
-			authHandlers.UserService = tc.userService
-			authService.store.TruncateUsers(ctx)
-			authService.store.CreateUser(ctx, user)
-			authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
+			err := authHandlers.profileProc(authReq)
 
-			authHandlers.profileProc(authReq)
-
-			rq.Equal(tc.err, authReq.GetKV()["error"])
+			rq.NoError(err)
+			rq.Equal(tc.template, authReq.Template)
+			rq.Equal(tc.payload, authReq.GetKV())
 			rq.Equal(tc.alerts, authReq.NewAlerts)
 			rq.Equal(tc.link, authReq.RedirectTo)
 		})
@@ -174,7 +214,6 @@ func Test_profileForm(t *testing.T) {
 func prepareClientAuthReq(ctx context.Context, req *http.Request, user *types.User, memStore *memstore.MemStore) *request.AuthReq {
 	// todo use parameter for settings
 	s := &settings.Settings{}
-
 	s.MultiFactor.EmailOTP.Enabled = true
 	s.MultiFactor.EmailOTP.Enforced = true
 	s.MultiFactor.TOTP.Enabled = true
@@ -190,30 +229,6 @@ func prepareClientAuthReq(ctx context.Context, req *http.Request, user *types.Us
 	}
 }
 
-func (u userServiceUpdateSuccess) Update(context.Context, *types.User) (*types.User, error) {
-	return &types.User{}, nil
-}
-
-func (u userServiceUpdateInvalidID) Update(context.Context, *types.User) (*types.User, error) {
-	return nil, service.UserErrInvalidID()
-}
-
-func (u userServiceUpdateInvalidHandle) Update(context.Context, *types.User) (*types.User, error) {
-	return nil, service.UserErrInvalidHandle()
-}
-
-func (u userServiceUpdateInvalidEmail) Update(context.Context, *types.User) (*types.User, error) {
-	return nil, service.UserErrInvalidEmail()
-}
-
-func (u userServiceUpdateHandleNotUnique) Update(context.Context, *types.User) (*types.User, error) {
-	return nil, service.UserErrHandleNotUnique()
-}
-
-func (u userServiceUpdateNotAllowedToUpdate) Update(context.Context, *types.User) (*types.User, error) {
-	return nil, service.UserErrNotAllowedToUpdate()
-}
-
 func prepareClientRequest(ctx context.Context) *http.Request {
 	return &http.Request{
 		Header:   http.Header{},
@@ -226,7 +241,7 @@ func prepareClientAuthService(ctx context.Context, storer store.Storer, user *ty
 	return authService
 }
 
-func prepareClientAuthHandlers(ctx context.Context, authService *mockAuthService, s *settings.Settings) *AuthHandlers {
+func prepareClientAuthHandlers(ctx context.Context, authService authService, s *settings.Settings) *AuthHandlers {
 	return &AuthHandlers{
 		Log:         zap.NewNop(),
 		AuthService: authService,
@@ -239,6 +254,10 @@ func initStore(ctx context.Context, t *testing.T) store.Storer {
 
 	if err != nil {
 		t.Errorf("Failed to initiate store")
+	}
+
+	if err := store.Upgrade(ctx, zap.NewNop(), mem); err != nil {
+		t.Error(err)
 	}
 
 	return mem

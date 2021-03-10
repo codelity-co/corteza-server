@@ -70,103 +70,111 @@ func Test_loginProc(t *testing.T) {
 
 		req = &http.Request{}
 
-		authService  *mockAuthService
+		authService  authService
 		authHandlers *AuthHandlers
 		authReq      *request.AuthReq
 
 		authSettings = &settings.Settings{}
 
 		rq = require.New(t)
-
-		tcc = []testingExpect{
-			{
-				name:    "successful login",
-				payload: map[string]string(nil),
-				alerts:  []request.Alert{{Type: "primary", Text: "You are now logged-in", Html: ""}},
-				link:    GetLinks().Profile,
-				fn: func() {
-					service.CurrentSettings.Auth.Internal.Enabled = true
-					req.PostForm.Add("email", "mockuser@example.tld")
-					req.PostForm.Add("password", "an_old_password_of_mine")
-				},
-			},
-			{
-				name:    "internal login is not enabled",
-				payload: map[string]string(nil),
-				alerts:  []request.Alert{{Type: "danger", Text: "Local accounts disabled", Html: ""}},
-				link:    GetLinks().Profile,
-				fn: func() {
-					service.CurrentSettings.Auth.Internal.Enabled = false
-				},
-			},
-			{
-				name:    "invalid email format",
-				payload: map[string]string{"email": "email@", "error": "invalid email"},
-				alerts:  []request.Alert(nil),
-				link:    GetLinks().Login,
-				fn: func() {
-					req.PostForm.Add("email", "email@")
-					service.CurrentSettings.Auth.Internal.Enabled = true
-				},
-			},
-			{
-				name:    "invalid credentials",
-				payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid username and password combination"},
-				alerts:  []request.Alert(nil),
-				link:    GetLinks().Login,
-				fn: func() {
-					req.PostForm.Add("email", "mockuser@example.tld")
-					req.PostForm.Add("password", "an_old_password_of_mine_BUT_FORGOT_IT")
-					service.CurrentSettings.Auth.Internal.Enabled = true
-				},
-			},
-			{
-				name:    "credentials linked to invalid user",
-				payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid username and password combination"},
-				alerts:  []request.Alert(nil),
-				link:    GetLinks().Login,
-				fn: func() {
-					req.PostForm.Add("email", "mockuser@example.tld")
-					req.PostForm.Add("password", "an_old_password_of_mine")
-					service.CurrentSettings.Auth.Internal.Enabled = true
-					user.SuspendedAt = now()
-				},
-			},
-			{
-				name:    "PendingEmailOTP",
-				payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid username and password combination"},
-				alerts:  []request.Alert(nil),
-				link:    GetLinks().Login,
-				fn: func() {
-					req.PostForm.Add("email", "mockuser@example.tld")
-					req.PostForm.Add("password", "an_old_password_of_mine")
-					service.CurrentSettings.Auth.Internal.Enabled = true
-					authSettings.MultiFactor.EmailOTP.Enabled = true
-					authSettings.MultiFactor.EmailOTP.Enforced = true
-				},
-			},
-		}
 	)
 
-	mem := initStore(ctx, t)
-
 	service.CurrentSettings = &types.AppSettings{}
+
+	tcc := []testingExpect{
+		{
+			name:    "successful login",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "primary", Text: "You are now logged-in", Html: ""}},
+			link:    GetLinks().Profile,
+			fn: func() {
+				authService = &authServiceMocked{
+					internalLogin: func(ctx context.Context, email, password string) (u *types.User, err error) {
+						u = &types.User{Meta: &types.UserMeta{}}
+						u.Meta.SecurityPolicy.MFA.EnforcedEmailOTP = true
+						u.Meta.SecurityPolicy.MFA.EnforcedTOTP = false
+
+						err = nil
+						return
+					},
+				}
+			},
+		},
+		{
+			name:    "internal login is not enabled",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "danger", Text: "Local accounts disabled", Html: ""}},
+			link:    GetLinks().Profile,
+			fn: func() {
+				authService = &authServiceMocked{
+					internalLogin: func(ctx context.Context, email, password string) (u *types.User, err error) {
+						err = service.AuthErrInternalLoginDisabledByConfig()
+						return
+					},
+				}
+			},
+		},
+		{
+			name:    "invalid email format",
+			payload: map[string]string{"email": "email@", "error": "invalid email"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Login,
+			fn: func() {
+				req.PostForm.Add("email", "email@")
+
+				authService = &authServiceMocked{
+					internalLogin: func(ctx context.Context, email, password string) (u *types.User, err error) {
+						err = service.AuthErrInvalidEmailFormat()
+						return
+					},
+				}
+			},
+		},
+		{
+			name:    "invalid credentials",
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "invalid username and password combination"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Login,
+			fn: func() {
+				req.PostForm.Add("email", "mockuser@example.tld")
+
+				authService = &authServiceMocked{
+					internalLogin: func(ctx context.Context, email, password string) (u *types.User, err error) {
+						err = service.AuthErrInvalidCredentials()
+						return
+					},
+				}
+			},
+		},
+		{
+			name:    "credentials linked to invalid user",
+			payload: map[string]string{"email": "mockuser@example.tld", "error": "credentials {credentials.kind} linked to disabled or deleted user {user}"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Login,
+			fn: func() {
+				req.PostForm.Add("email", "mockuser@example.tld")
+
+				authService = &authServiceMocked{
+					internalLogin: func(ctx context.Context, email, password string) (u *types.User, err error) {
+						err = service.AuthErrCredentialsLinkedToInvalidUser()
+						return
+					},
+				}
+			},
+		},
+	}
 
 	for _, tc := range tcc {
 		t.Run(tc.name, func(t *testing.T) {
 			// reset from previous
+			req.Form = url.Values{}
 			req.PostForm = url.Values{}
+			user.Meta = &types.UserMeta{}
 
 			tc.fn()
 
-			authService = prepareClientAuthService(ctx, mem, user, memStore)
 			authReq = prepareClientAuthReq(ctx, req, user, memStore)
 			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
-
-			authHandlers.UserService = tc.userService
-			authService.store.TruncateUsers(ctx)
-			authService.store.CreateUser(ctx, user)
-			authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
 
 			err := authHandlers.loginProc(authReq)
 

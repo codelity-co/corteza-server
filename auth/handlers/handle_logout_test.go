@@ -18,26 +18,29 @@ func Test_logoutProc(t *testing.T) {
 	var (
 		ctx      = context.Background()
 		memStore = memstore.NewMemStore()
-		rq       = require.New(t)
 		user     = makeMockUser(ctx)
 
-		req = &http.Request{PostForm: url.Values{"back": []string{"/back"}}}
+		req = &http.Request{}
 
-		authService  *mockAuthService
+		authService  authService
 		authHandlers *AuthHandlers
 		authReq      *request.AuthReq
+
+		authSettings = &settings.Settings{}
+
+		rq = require.New(t)
 	)
 
-	mem := initStore(ctx, t)
-
-	authSettings := &settings.Settings{}
+	authSettings = &settings.Settings{}
 	service.CurrentSettings = &types.AppSettings{}
 	service.CurrentSettings.Auth.Internal.Enabled = true
 
-	authService = prepareClientAuthService(ctx, mem, user, memStore)
+	authService = &authServiceMocked{}
 	authReq = prepareClientAuthReq(ctx, req, user, memStore)
 	authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
+	req.PostForm = url.Values{}
+	req.PostForm.Add("back", "/back")
 	authReq.Session.Values = map[interface{}]interface{}{"key": url.Values{"key": []string{"value"}}}
 
 	err := authHandlers.logoutProc(authReq)

@@ -2,61 +2,131 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/cortezaproject/corteza-server/auth/request"
 	"github.com/cortezaproject/corteza-server/auth/settings"
 	"github.com/cortezaproject/corteza-server/system/service"
 	"github.com/cortezaproject/corteza-server/system/types"
-	"github.com/gorilla/sessions"
 	"github.com/quasoft/memstore"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 )
 
-func Test_requestPasswordResetForm_setValues(t *testing.T) {
+func Test_requestPasswordResetForm(t *testing.T) {
 	var (
-		memStore = memstore.NewMemStore()
 		ctx      = context.Background()
-		rq       = require.New(t)
+		memStore = memstore.NewMemStore()
+		user     = makeMockUser(ctx)
 
-		req         *http.Request
-		authService *mockAuthService
+		req = &http.Request{
+			URL: &url.URL{},
+		}
+
+		authService  authService
+		authHandlers *AuthHandlers
+		authReq      *request.AuthReq
+
+		authSettings = &settings.Settings{}
+
+		rq = require.New(t)
 	)
 
-	req = &http.Request{
-		Header:   http.Header{},
-		PostForm: url.Values{},
-	}
+	authReq = prepareClientAuthReq(ctx, req, user, memStore)
+	authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
-	service.CurrentSettings = &types.AppSettings{}
-
-	authService = makeMockAuthService(ctx)
-
-	h := AuthHandlers{
-		Log:         zap.NewNop(),
-		AuthService: authService,
-	}
-
-	authReq := request.AuthReq{
-		Request:  req,
-		Session:  sessions.NewSession(memStore, "session"),
-		Response: httptest.NewRecorder(),
-		Data:     make(map[string]interface{}),
-	}
-
-	payload := map[string]string{"key": "value"}
+	payload := map[string]string{"foo": "bar"}
 	authReq.SetKV(payload)
 
-	err := h.requestPasswordResetForm(&authReq)
+	err := authHandlers.requestPasswordResetForm(authReq)
 
 	rq.NoError(err)
 	rq.Equal(TmplRequestPasswordReset, authReq.Template)
-	rq.Equal(payload, authReq.Data["form"])
+	rq.Equal(authReq.Data["form"], payload)
+}
+
+func Test_resetPasswordForm(t *testing.T) {
+	var (
+		ctx      = context.Background()
+		memStore = memstore.NewMemStore()
+		user     = makeMockUser(ctx)
+
+		req = &http.Request{
+			URL: &url.URL{},
+		}
+
+		authService  authService
+		authHandlers *AuthHandlers
+		authReq      *request.AuthReq
+
+		authSettings = &settings.Settings{}
+
+		rq = require.New(t)
+	)
+
+	tcc := []testingExpect{
+		{
+			name:     "request reset success",
+			payload:  map[string]string(nil),
+			alerts:   []request.Alert(nil),
+			link:     GetLinks().ResetPassword,
+			template: TmplResetPassword,
+			fn: func() {
+				req.URL = &url.URL{RawQuery: "token=NOT_EMPTY"}
+
+				authService = &authServiceMocked{
+					validatePasswordResetToken: func(ctx context.Context, token string) (user *types.User, err error) {
+						u := makeMockUser(ctx)
+						u.SetRoles([]uint64{})
+
+						return u, nil
+					},
+				}
+			},
+		},
+		{
+			name:     "invalid password reset token",
+			payload:  map[string]string(nil),
+			alerts:   []request.Alert{{Type: "warning", Text: "Invalid or expired password reset token, please repeat password reset request."}},
+			link:     GetLinks().RequestPasswordReset,
+			template: TmplResetPassword,
+			fn: func() {
+				req.URL = &url.URL{RawQuery: "token=NOT_EMPTY"}
+
+				authService = &authServiceMocked{
+					validatePasswordResetToken: func(ctx context.Context, token string) (user *types.User, err error) {
+						return nil, errors.New("invalid token")
+					},
+				}
+			},
+		},
+	}
+
+	for _, tc := range tcc {
+		t.Run(tc.name, func(t *testing.T) {
+			// reset from previous
+			req.Form = url.Values{}
+			req.PostForm = url.Values{}
+
+			tc.fn()
+
+			authReq = prepareClientAuthReq(ctx, req, user, memStore)
+			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
+
+			// unset so we get to the main functionality
+			authReq.AuthUser.User = nil
+
+			err := authHandlers.resetPasswordForm(authReq)
+
+			rq.NoError(err)
+			rq.Equal(tc.template, authReq.Template)
+			rq.Equal(tc.payload, authReq.GetKV())
+			rq.Equal(tc.alerts, authReq.NewAlerts)
+			rq.Equal(tc.link, authReq.RedirectTo)
+		})
+	}
 }
 
 func Test_requestPasswordReset(t *testing.T) {
@@ -65,263 +135,127 @@ func Test_requestPasswordReset(t *testing.T) {
 		memStore = memstore.NewMemStore()
 		user     = makeMockUser(ctx)
 
-		req         *http.Request
-		authService *mockAuthService
+		req = &http.Request{}
+
+		authService  authService
+		authHandlers *AuthHandlers
+		authReq      *request.AuthReq
+
+		authSettings = &settings.Settings{}
+
+		rq = require.New(t)
 	)
 
-	// t.Run("proc", func(t *testing.T) {
-	// 	rq := require.New(t)
-	// 	req = &http.Request{
-	// 		Header:   http.Header{},
-	// 		PostForm: make(url.Values),
-	// 	}
+	tcc := []testingExpect{
+		{
+			name:    "request reset success",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().PasswordResetRequested,
+			fn: func() {
+				authService = &authServiceMocked{
+					sendPasswordResetToken: func(ctx context.Context, email string) (err error) {
+						return nil
+					},
+				}
+			},
+		},
+		{
+			name:    "request reset disabled",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "danger", Text: "Password reset disabled"}},
+			link:    GetLinks().Login,
+			fn: func() {
+				authService = &authServiceMocked{
+					sendPasswordResetToken: func(ctx context.Context, email string) (err error) {
+						return service.AuthErrPasswordResetDisabledByConfig()
+					},
+				}
+			},
+		},
+	}
 
-	// 	req.PostForm.Add("email", "mockuser@example.tld")
+	for _, tc := range tcc {
+		t.Run(tc.name, func(t *testing.T) {
+			// reset from previous
+			req.Form = url.Values{}
+			req.PostForm = url.Values{}
+			user.Meta = &types.UserMeta{}
 
-	// 	service.CurrentSettings = &types.AppSettings{}
-	// 	service.CurrentSettings.Auth.Internal.Enabled = true
-	// 	service.CurrentSettings.Auth.Internal.PasswordReset.Enabled = true
+			tc.fn()
 
-	// 	authService = makeMockAuthService(ctx)
-	// 	authService.store.TruncateUsers(ctx)
-	// 	authService.store.CreateUser(ctx, user)
-	// 	authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
+			authReq = prepareClientAuthReq(ctx, req, user, memStore)
+			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
-	// 	h := AuthHandlers{
-	// 		Log:         zap.NewNop(),
-	// 		AuthService: authService,
-	// 	}
+			err := authHandlers.requestPasswordResetProc(authReq)
 
-	// 	authReq := request.AuthReq{
-	// 		Request:  req,
-	// 		User:     user,
-	// 		Session:  sessions.NewSession(memStore, "session"),
-	// 		Response: httptest.NewRecorder(),
-	// 		Data:     make(map[string]interface{}),
-	// 	}
+			rq.NoError(err)
+			rq.Equal(tc.payload, authReq.GetKV())
+			rq.Equal(tc.alerts, authReq.NewAlerts)
+			rq.Equal(tc.link, authReq.RedirectTo)
+		})
+	}
+}
 
-	// 	err := h.requestPasswordResetProc(&authReq)
+func Test_requestPasswordProc(t *testing.T) {
+	var (
+		ctx      = context.Background()
+		memStore = memstore.NewMemStore()
+		user     = makeMockUser(ctx)
 
-	// 	rq.NoError(err)
-	// 	rq.Equal(GetLinks().PasswordResetRequested, authReq.RedirectTo)
-	// })
+		req = &http.Request{}
 
-	// t.Run("form", func(t *testing.T) {
-	// 	rq := require.New(t)
-	// 	req = &http.Request{
-	// 		Header:   http.Header{},
-	// 		PostForm: make(url.Values),
-	// 	}
+		authService  authService
+		authHandlers *AuthHandlers
+		authReq      *request.AuthReq
 
-	// 	req.PostForm.Add("email", "mockuser@example.tld")
+		authSettings = &settings.Settings{}
 
-	// 	service.CurrentSettings = &types.AppSettings{}
-	// 	service.CurrentSettings.Auth.Internal.Enabled = true
-	// 	service.CurrentSettings.Auth.Internal.PasswordReset.Enabled = true
+		rq = require.New(t)
+	)
 
-	// 	authService = makeMockAuthService(ctx)
-	// 	authService.store.TruncateUsers(ctx)
-	// 	authService.store.CreateUser(ctx, user)
-	// 	authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
+	tcc := []testingExpect{
+		{
+			name:    "reset password success",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "primary", Text: "Password successfully reset.", Html: ""}},
+			link:    GetLinks().Profile,
+			fn: func() {
+				authService = &authServiceMocked{
+					setPassword: func(ctx context.Context, userID uint64, password string) (err error) {
+						return nil
+					},
+				}
+			},
+		},
+		{
+			name:    "reset password disabled",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "danger", Text: "Password reset disabled", Html: ""}},
+			link:    GetLinks().Login,
+			fn: func() {
+				authService = &authServiceMocked{
+					setPassword: func(ctx context.Context, userID uint64, password string) (err error) {
+						return service.AuthErrPasswordResetDisabledByConfig()
+					},
+				}
+			},
+		},
+	}
 
-	// 	h := AuthHandlers{
-	// 		Log:         zap.NewNop(),
-	// 		AuthService: authService,
-	// 	}
+	for _, tc := range tcc {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.fn()
 
-	// 	authReq := request.AuthReq{
-	// 		Request:  req,
-	// 		User:     user,
-	// 		Session:  sessions.NewSession(memStore, "session"),
-	// 		Response: httptest.NewRecorder(),
-	// 		Data:     make(map[string]interface{}),
-	// 	}
+			authReq = prepareClientAuthReq(ctx, req, user, memStore)
+			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
 
-	// 	payload := map[string]string{"key": "value"}
-	// 	authReq.SetKV(payload)
+			err := authHandlers.resetPasswordProc(authReq)
 
-	// 	err := h.resetPasswordForm(&authReq)
-
-	// 	rq.NoError(err)
-	// 	rq.Equal(TmplResetPassword, authReq.Template)
-	// 	rq.Equal(payload, authReq.Data["form"])
-	// })
-
-	t.Run("form empty token", func(t *testing.T) {
-		rq := require.New(t)
-
-		tokenUrl, _ := url.Parse("?token=")
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-			URL:      tokenUrl,
-		}
-
-		service.CurrentSettings = &types.AppSettings{}
-		service.CurrentSettings.Auth.Internal.Enabled = true
-		service.CurrentSettings.Auth.Internal.PasswordReset.Enabled = true
-
-		authService = makeMockAuthService(ctx)
-		authService.store.TruncateUsers(ctx)
-		authService.store.CreateUser(ctx, user)
-		authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
-
-		h := AuthHandlers{
-			Log:         zap.NewNop(),
-			AuthService: authService,
-		}
-
-		authReq := request.AuthReq{
-			Request:  req,
-			Session:  sessions.NewSession(memStore, "session"),
-			Response: httptest.NewRecorder(),
-			Data:     make(map[string]interface{}),
-		}
-
-		payload := map[string]string{"key": "value"}
-		authReq.SetKV(payload)
-
-		err := h.resetPasswordForm(&authReq)
-
-		rq.NoError(err)
-		rq.Equal(TmplResetPassword, authReq.Template)
-		rq.Equal(payload, authReq.Data["form"])
-		rq.Equal(GetLinks().RequestPasswordReset, authReq.RedirectTo)
-		rq.Equal([]request.Alert([]request.Alert{{Type: "warning", Text: "Invalid or expired password reset token, please repeat password reset request.", Html: ""}}), authReq.NewAlerts)
-	})
-
-	t.Run("form valid token", func(t *testing.T) {
-		rq := require.New(t)
-
-		tokenUrl, _ := url.Parse("?token=456")
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-			URL:      tokenUrl,
-		}
-
-		service.CurrentSettings = &types.AppSettings{}
-		service.CurrentSettings.Auth.Internal.Enabled = true
-		service.CurrentSettings.Auth.Internal.PasswordReset.Enabled = true
-
-		authService = makeMockAuthService(ctx)
-		authService.store.TruncateUsers(ctx)
-		authService.store.CreateUser(ctx, user)
-		authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
-
-		h := AuthHandlers{
-			Log:         zap.NewNop(),
-			AuthService: authService,
-		}
-
-		authReq := request.AuthReq{
-			Request:  req,
-			Session:  sessions.NewSession(memStore, "session"),
-			Response: httptest.NewRecorder(),
-			Data:     make(map[string]interface{}),
-		}
-
-		payload := map[string]string{"key": "value"}
-		authReq.SetKV(payload)
-
-		err := h.resetPasswordForm(&authReq)
-
-		rq.NoError(err)
-		rq.Equal(TmplResetPassword, authReq.Template)
-		// rq.Equal(uint64(123), authReq.User.ID)
-		rq.Equal(GetLinks().ResetPassword, authReq.RedirectTo)
-	})
-
-	t.Run("reset password proc success", func(t *testing.T) {
-		rq := require.New(t)
-
-		tokenUrl, _ := url.Parse("?token=123")
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-			URL:      tokenUrl,
-		}
-
-		req.PostForm.Add("password", "an_old_password_of_mine")
-
-		service.CurrentSettings = &types.AppSettings{}
-		service.CurrentSettings.Auth.Internal.Enabled = true
-		service.CurrentSettings.Auth.Internal.PasswordReset.Enabled = true
-
-		authService = makeMockAuthService(ctx)
-		authService.store.TruncateUsers(ctx)
-		authService.store.CreateUser(ctx, user)
-		authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
-
-		authUser := request.NewAuthUser(&settings.Settings{}, user, true, time.Duration(time.Hour))
-
-		h := AuthHandlers{
-			Log:         zap.NewNop(),
-			AuthService: authService,
-		}
-
-		authReq := request.AuthReq{
-			Request:  req,
-			Session:  sessions.NewSession(memStore, "session"),
-			Response: httptest.NewRecorder(),
-			Data:     make(map[string]interface{}),
-			AuthUser: authUser,
-		}
-
-		payload := map[string]string{"key": "value"}
-		authReq.SetKV(payload)
-
-		err := h.resetPasswordProc(&authReq)
-
-		rq.NoError(err)
-		rq.Equal([]request.Alert{{Type: "primary", Text: "Password successfully reset.", Html: ""}}, authReq.NewAlerts)
-		rq.Equal(GetLinks().Profile, authReq.RedirectTo)
-	})
-
-	t.Run("reset password proc disabled", func(t *testing.T) {
-		rq := require.New(t)
-
-		tokenUrl, _ := url.Parse("?token=123")
-		req = &http.Request{
-			Header:   http.Header{},
-			PostForm: make(url.Values),
-			URL:      tokenUrl,
-		}
-
-		req.PostForm.Add("password", "an_old_password_of_mine")
-
-		service.CurrentSettings = &types.AppSettings{}
-		service.CurrentSettings.Auth.Internal.Enabled = true
-		service.CurrentSettings.Auth.Internal.PasswordReset.Enabled = false
-
-		authUser := request.NewAuthUser(&settings.Settings{}, user, true, time.Duration(time.Hour))
-
-		authService = makeMockAuthService(ctx)
-		authService.store.TruncateUsers(ctx)
-		authService.store.CreateUser(ctx, user)
-		authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
-
-		h := AuthHandlers{
-			Log:         zap.NewNop(),
-			AuthService: authService,
-		}
-
-		authReq := request.AuthReq{
-			Request:  req,
-			Session:  sessions.NewSession(memStore, "session"),
-			Response: httptest.NewRecorder(),
-			Data:     make(map[string]interface{}),
-			AuthUser: authUser,
-		}
-
-		payload := map[string]string{"key": "value"}
-		authReq.SetKV(payload)
-
-		err := h.resetPasswordProc(&authReq)
-
-		rq.NoError(err)
-		rq.Equal([]request.Alert{{Type: "danger", Text: "Password reset disabled", Html: ""}}, authReq.NewAlerts)
-		rq.Equal(GetLinks().Login, authReq.RedirectTo)
-	})
-	t.Fail()
+			rq.NoError(err)
+			rq.Equal(tc.payload, authReq.GetKV())
+			rq.Equal(tc.alerts, authReq.NewAlerts)
+			rq.Equal(tc.link, authReq.RedirectTo)
+		})
+	}
 }

@@ -22,56 +22,194 @@ func Test_mfaProc(t *testing.T) {
 
 		req = &http.Request{}
 
-		authService  *mockAuthService
+		authService  authService
 		authHandlers *AuthHandlers
 		authReq      *request.AuthReq
 
 		authSettings = &settings.Settings{}
 
 		rq = require.New(t)
-
-		tcc = []testingExpect{
-			{
-				name:    "successful login",
-				payload: map[string]string(nil),
-				alerts:  []request.Alert{{Type: "primary", Text: "Email OTP valid"}},
-				link:    GetLinks().Profile,
-				fn: func() {
-					req.Form.Set("action", "verifyEmailOtp")
-					service.CurrentSettings.Auth.Internal.Enabled = true
-					req.PostForm.Add("code", "CODE_HERE")
-				},
-			},
-		}
 	)
 
-	mem := initStore(ctx, t)
-
 	service.CurrentSettings = &types.AppSettings{}
+
+	tcc := []testingExpect{
+		{
+			name:    "Email: successful login",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "primary", Text: "Email OTP valid"}},
+			link:    GetLinks().Profile,
+			fn: func() {
+				req.Form.Set("action", "verifyEmailOtp")
+				req.PostForm.Add("code", "123456")
+
+				authService = &authServiceMocked{
+					validateEmailOTP: func(ctx context.Context, code string) (err error) {
+						return nil
+					},
+				}
+			},
+		},
+		{
+			name:    "TOTP: successful login",
+			payload: map[string]string(nil),
+			alerts:  []request.Alert{{Type: "primary", Text: "TOTP valid"}},
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyTotp")
+				req.PostForm.Add("code", "123456")
+
+				authService = &authServiceMocked{
+					validateTOTP: func(ctx context.Context, code string) (err error) {
+						return nil
+					},
+				}
+			},
+		},
+		{
+			name:    "Email: disabled",
+			payload: map[string]string{"emailOtpError": "multi factor authentication with email OTP is disabled"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyEmailOtp")
+
+				authService = &authServiceMocked{
+					validateEmailOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrDisabledMFAWithEmailOTP()
+					},
+				}
+			},
+		},
+		{
+			name:    "Email: auth failed for disabled user",
+			payload: map[string]string{"emailOtpError": "invalid username and password combination"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyEmailOtp")
+
+				authService = &authServiceMocked{
+					validateEmailOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrFailedForUnknownUser()
+					},
+				}
+			},
+		},
+		{
+			name:    "Email: invalid token",
+			payload: map[string]string{"emailOtpError": "invalid email OTP"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyEmailOtp")
+				req.PostForm.Add("code", "token_TOO_LONG")
+
+				authService = &authServiceMocked{
+					validateEmailOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrInvalidEmailOTP()
+					},
+				}
+			},
+		},
+		{
+			name:    "Email: no token in credentials db",
+			payload: map[string]string{"emailOtpError": "invalid email OTP"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyEmailOtp")
+				req.PostForm.Add("code", "123456")
+
+				authService = &authServiceMocked{
+					validateEmailOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrInvalidEmailOTP()
+					},
+				}
+			},
+		},
+		{
+			name:    "TOTP: disabled",
+			payload: map[string]string{"totpError": "multi factor authentication with TOTP is disabled"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyTotp")
+
+				authService = &authServiceMocked{
+					validateTOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrDisabledMFAWithTOTP()
+					},
+				}
+			},
+		},
+		{
+			name:    "TOTP: auth failed for disabled user",
+			payload: map[string]string{"totpError": "invalid username and password combination"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyTotp")
+
+				authService = &authServiceMocked{
+					validateTOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrFailedForUnknownUser()
+					},
+				}
+			},
+		},
+		{
+			name:    "TOTP: invalid token",
+			payload: map[string]string{"totpError": "invalid TOTP"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyTotp")
+				req.PostForm.Add("code", "token_TOO_LONG")
+
+				authService = &authServiceMocked{
+					validateTOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrInvalidTOTP()
+					},
+				}
+			},
+		},
+		{
+			name:    "TOTP: no token in credentials db",
+			payload: map[string]string{"totpError": "invalid TOTP"},
+			alerts:  []request.Alert(nil),
+			link:    GetLinks().Mfa,
+			fn: func() {
+				req.Form.Set("action", "verifyTotp")
+				req.PostForm.Add("code", "123456")
+
+				authService = &authServiceMocked{
+					validateTOTP: func(ctx context.Context, code string) (err error) {
+						return service.AuthErrInvalidTOTP()
+					},
+				}
+			},
+		},
+	}
 
 	for _, tc := range tcc {
 		t.Run(tc.name, func(t *testing.T) {
 			// reset from previous
-			req.PostForm = url.Values{}
 			req.Form = url.Values{}
+			req.PostForm = url.Values{}
+			user.Meta = &types.UserMeta{}
 
 			tc.fn()
 
-			authService = prepareClientAuthService(ctx, mem, user, memStore)
 			authReq = prepareClientAuthReq(ctx, req, user, memStore)
 			authHandlers = prepareClientAuthHandlers(ctx, authService, authSettings)
-
-			authHandlers.UserService = tc.userService
-			authService.store.TruncateUsers(ctx)
-			authService.store.CreateUser(ctx, user)
-			authService.SetPassword(ctx, user.ID, "an_old_password_of_mine")
 
 			err := authHandlers.mfaProc(authReq)
 
 			rq.NoError(err)
-			// rq.Equal(tc.payload, authReq.GetKV())
+			rq.Equal(tc.payload, authReq.GetKV())
 			rq.Equal(tc.alerts, authReq.NewAlerts)
-			// rq.Equal(tc.link, authReq.RedirectTo)
+			rq.Equal(tc.link, authReq.RedirectTo)
 		})
 	}
 }
