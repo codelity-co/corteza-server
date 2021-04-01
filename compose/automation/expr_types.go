@@ -8,6 +8,7 @@ import (
 	"github.com/cortezaproject/corteza-server/pkg/expr"
 	"github.com/spf13/cast"
 	"strings"
+	"time"
 )
 
 func CastToComposeNamespace(val interface{}) (out *types.Namespace, err error) {
@@ -52,9 +53,11 @@ func CastToComposeRecord(val interface{}) (out *types.Record, err error) {
 			return assignToComposeRecord(out, k, v)
 		})
 	}
-
 	switch val := expr.UntypedValue(val).(type) {
 	case *types.Record:
+		if val.Values == nil {
+			val.Values = types.RecordValueSet{}
+		}
 		return val, nil
 	default:
 		return nil, fmt.Errorf("unable to cast type %T to %T", val, out)
@@ -67,7 +70,7 @@ var _ expr.DeepFieldAssigner = &ComposeRecord{}
 //
 // We need to reroute value assigning for record-value-sets because
 // we loose the reference to record-value slice
-func (t *ComposeRecord) AssignFieldValue(kk []string, val interface{}) error {
+func (t *ComposeRecord) AssignFieldValue(kk []string, val expr.TypedValue) error {
 	switch kk[0] {
 	case "values":
 		return assignToComposeRecordValues(&t.value.Values, kk[1:], val)
@@ -94,7 +97,6 @@ func (t ComposeRecord) SelectGVal(ctx context.Context, k string) (interface{}, e
 
 func CastToComposeRecordValues(val interface{}) (out types.RecordValueSet, err error) {
 	out = types.RecordValueSet{}
-
 	switch val := val.(type) {
 	case expr.Iterator:
 		return out, val.Each(func(k string, v expr.TypedValue) error {
@@ -143,7 +145,7 @@ func CastToComposeRecordValues(val interface{}) (out types.RecordValueSet, err e
 	}
 }
 
-func (t *ComposeRecordValues) AssignFieldValue(pp []string, val interface{}) error {
+func (t *ComposeRecordValues) AssignFieldValue(pp []string, val expr.TypedValue) error {
 	return assignToComposeRecordValues(&t.value, pp, val)
 }
 
@@ -210,12 +212,74 @@ func composeRecordValuesTypedValueSelector(res types.RecordValueSet, k string) (
 // assignToRecordValuesSet is field value setter for *types.Record
 func assignToComposeRecordValues(res *types.RecordValueSet, pp []string, val interface{}) (err error) {
 	if len(pp) < 1 {
+		switch val := expr.UntypedValue(val).(type) {
+		case types.RecordValueSet:
+			*res = val
+			return
+		case *types.Record:
+			*res = val.Values
+			return
+		}
+
 		return fmt.Errorf("empty path used for assigning record values")
 	}
 
-	k := pp[0]
-	rv := &types.RecordValue{Name: k}
-	if rv.Value, err = cast.ToStringE(expr.UntypedValue(val)); err != nil {
+	var (
+		k  = pp[0]
+		rv = &types.RecordValue{Name: k}
+
+		setSliceOfValues = func(vv []interface{}) error {
+			// Handle situation where array of values is assigned to a single (multi-value) field
+			// @todo this should use field context (when available) to determinate if we're actually
+			//       setting array to a multi-value field
+
+			if len(pp) == 2 {
+				// Tying to assign an array of values to a single value; that will not work
+				return fmt.Errorf("can not assign array of values to a single value in a record value set")
+			}
+
+			for p, v := range vv {
+				rv = &types.RecordValue{Name: k, Place: uint(p)}
+				rv.Value, err = cast.ToStringE(v)
+				if err != nil {
+					return err
+				}
+
+				*res = res.Set(rv)
+			}
+
+			return nil
+		}
+	)
+
+	// @todo this needs to be implemented properly
+	//       we're just guessing here and puting out fires
+	switch utval := expr.UntypedValue(val).(type) {
+	case time.Time:
+		rv.Value = utval.Format(time.RFC3339)
+	case *time.Time:
+		rv.Value = utval.Format(time.RFC3339)
+	case []string:
+		aux := make([]interface{}, len(utval))
+		for i := range utval {
+			aux[i] = utval[i]
+		}
+
+		return setSliceOfValues(aux)
+	case []expr.TypedValue: // expr.Array
+		aux := make([]interface{}, len(utval))
+		for i := range utval {
+			aux[i] = utval[i].Get()
+		}
+
+		return setSliceOfValues(aux)
+	case []interface{}: // expr.Any
+		return setSliceOfValues(utval)
+	default:
+		rv.Value, err = cast.ToStringE(utval)
+	}
+
+	if err != nil {
 		return
 	}
 
@@ -226,7 +290,7 @@ func assignToComposeRecordValues(res *types.RecordValueSet, pp []string, val int
 	}
 
 	*res = res.Set(rv)
-	//return fmt.Errorf("unknown field '%s'", k)
+
 	return nil
 }
 

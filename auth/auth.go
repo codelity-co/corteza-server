@@ -22,6 +22,7 @@ import (
 	"go.uber.org/zap"
 	"html/template"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +39,7 @@ type (
 )
 
 //go:embed assets/public
-var publicAssets embed.FS
+var PublicAssets embed.FS
 
 // New initializes Auth service that orchestrates session manager, oauth2 manager and http request handlers
 func New(ctx context.Context, log *zap.Logger, s store.Storer, opt options.AuthOpt) (svc *service, err error) {
@@ -52,15 +53,12 @@ func New(ctx context.Context, log *zap.Logger, s store.Storer, opt options.AuthO
 
 	svc = &service{
 		opt:      opt,
-		log:      log,
+		log:      log.WithOptions(zap.AddStacktrace(zap.PanicLevel)),
 		store:    s,
 		settings: &settings.Settings{ /* all disabled by default. */ },
 	}
 
-	// use modified log ger for the resrt
-	if opt.LogEnabled {
-		log = log.WithOptions(zap.AddStacktrace(zap.PanicLevel))
-	} else {
+	if !opt.LogEnabled {
 		log = zap.NewNop()
 	}
 
@@ -68,6 +66,7 @@ func New(ctx context.Context, log *zap.Logger, s store.Storer, opt options.AuthO
 
 	oauth2Manager := oauth2.NewManager(
 		opt,
+		log,
 		&oauth2.ContextClientStore{},
 		&oauth2.CortezaTokenStore{Store: s},
 	)
@@ -157,6 +156,8 @@ func New(ctx context.Context, log *zap.Logger, s store.Storer, opt options.AuthO
 	}
 
 	var (
+		tplLoader templateLoader
+
 		tplBase = template.New("").
 			Funcs(sprig.FuncMap()).
 			Funcs(template.FuncMap{
@@ -164,10 +165,14 @@ func New(ctx context.Context, log *zap.Logger, s store.Storer, opt options.AuthO
 				"buildtime": func() string { return version.BuildTime },
 				"links":     handlers.GetLinks,
 			})
-		tplLoader templateLoader
+
+		useEmbedded = len(opt.AssetsPath) == 0
 	)
 
-	if len(opt.AssetsPath) > 0 {
+	if useEmbedded {
+		tplLoader = EmbeddedTemplates
+		log.Info("using embedded templates")
+	} else {
 		tplLoader = func(t *template.Template) (tpl *template.Template, err error) {
 			if tpl, err = t.Clone(); err != nil {
 				return nil, fmt.Errorf("cannot clone templates: %w", err)
@@ -175,21 +180,27 @@ func New(ctx context.Context, log *zap.Logger, s store.Storer, opt options.AuthO
 				return tpl.ParseGlob(opt.AssetsPath + "/templates/*.tpl")
 			}
 		}
-		log.Info("loading assets from filesystem", zap.String("path", opt.AssetsPath))
-	} else {
-		tplLoader = EmbeddedTemplates
-		log.Info("using embedded assets")
+		log.Info(
+			"loading templates from filesystem",
+			zap.String("AUTH_ASSETS_PATH", svc.opt.AssetsPath),
+		)
 	}
 
-	if !opt.DevelopmentMode || len(opt.AssetsPath) == 0 {
-		log.Info("initializing templates without reloading (production mode)")
+	if !useEmbedded && opt.DevelopmentMode {
+		log.Info(
+			"initializing reloadable templates",
+			zap.Bool("AUTH_DEVELOPMENT_MODE", opt.DevelopmentMode),
+		)
+		tpls = NewReloadableTemplates(tplBase, tplLoader)
+	} else {
+		log.Info(
+			"initializing templates without reloading",
+			zap.Bool("AUTH_DEVELOPMENT_MODE", opt.DevelopmentMode),
+		)
 		tpls, err = NewStaticTemplates(tplBase, tplLoader)
 		if err != nil {
 			return nil, fmt.Errorf("cannot load templates: %w", err)
 		}
-	} else {
-		log.Info("initializing reloadable templates (development mode)")
-		tpls = NewReloadableTemplates(tplBase, tplLoader)
 	}
 
 	svc.handlers = &handlers.AuthHandlers{
@@ -294,12 +305,33 @@ func (svc service) MountHttpRoutes(r chi.Router) {
 	svc.handlers.MountHttpRoutes(r)
 
 	const uriRoot = "/auth/assets/public"
-	if len(svc.opt.AssetsPath) == 0 && !svc.opt.DevelopmentMode {
-		r.Handle(uriRoot+"/*", http.StripPrefix("/auth/", http.FileServer(http.FS(publicAssets))))
-	} else {
+	if svc.opt.DevelopmentMode {
 		var root = strings.TrimRight(svc.opt.AssetsPath, "/") + "/public"
-		r.Handle(uriRoot+"/*", http.StripPrefix(uriRoot, http.FileServer(http.Dir(root))))
+
+		if err := dirCheck(root); err != nil {
+			svc.log.Error(
+				"failed to run in development mode (AUTH_DEVELOPMENT_MODE=true)",
+				zap.Error(err),
+				zap.String("AUTH_ASSETS_PATH", svc.opt.AssetsPath),
+			)
+		} else {
+			r.Handle(uriRoot+"/*", http.StripPrefix(uriRoot, http.FileServer(http.Dir(root))))
+			return
+		}
 	}
+
+	// fallback to embedded assets
+	r.Handle(uriRoot+"/*", http.StripPrefix("/auth/", http.FileServer(http.FS(PublicAssets))))
+}
+
+// checks if directory exists & is readable
+func dirCheck(path string) (err error) {
+	_, err = os.Stat(path)
+	if !os.IsNotExist(err) {
+		return
+	}
+
+	return
 }
 
 //func (svc service) WellKnownOpenIDConfiguration() http.HandlerFunc {

@@ -16,8 +16,8 @@ func TestSetRecordValuesWithPath(t *testing.T) {
 			rvs = &ComposeRecordValues{types.RecordValueSet{}}
 		)
 
-		r.NoError(expr.Assign(rvs, "field1", "a"))
-		r.NoError(expr.Assign(rvs, "field1.1", "a"))
+		r.NoError(expr.Assign(rvs, "field1", expr.Must(expr.NewString("a"))))
+		r.NoError(expr.Assign(rvs, "field1.1", expr.Must(expr.NewString("a"))))
 		r.True(rvs.value.Has("field1", 0))
 		r.True(rvs.value.Has("field1", 1))
 	})
@@ -129,7 +129,70 @@ func TestRecordFieldValuesAccess(t *testing.T) {
 		eval, err = parser.Parse(`rec.values.m2[0] == "mVal2.0"`)
 		req.NoError(err)
 		req.True(eval.Test(context.Background(), scope))
+	})
+}
 
+func TestAssignToComposeRecordValues(t *testing.T) {
+	t.Run("assign simple", func(t *testing.T) {
+		var (
+			req    = require.New(t)
+			target = types.RecordValueSet{}
+		)
+
+		req.NoError(assignToComposeRecordValues(&target, []string{"a"}, "b"))
+		req.Len(target, 1)
+		req.True(target.Has("a", 0))
+		req.NoError(assignToComposeRecordValues(&target, []string{"a", "1"}, "b"))
+		req.Len(target, 2)
+		req.True(target.Has("a", 0))
+		req.True(target.Has("a", 1))
 	})
 
+	t.Run("assign rvs", func(t *testing.T) {
+		var (
+			req    = require.New(t)
+			target = types.RecordValueSet{}
+		)
+
+		req.NoError(assignToComposeRecordValues(&target, nil, types.RecordValueSet{{}}))
+		req.Len(target, 1)
+	})
+
+	t.Run("assign record", func(t *testing.T) {
+		var (
+			req    = require.New(t)
+			target = types.RecordValueSet{}
+		)
+
+		req.NoError(assignToComposeRecordValues(&target, nil, &types.Record{Values: types.RecordValueSet{{}}}))
+		req.Len(target, 1)
+	})
+
+	t.Run("overwrite rvs", func(t *testing.T) {
+		var (
+			req    = require.New(t)
+			target = types.RecordValueSet{{Name: "a"}}
+		)
+
+		req.NoError(assignToComposeRecordValues(&target, nil, types.RecordValueSet{{Name: "b"}}))
+		req.Len(target, 1)
+		req.False(target.Has("a", 0))
+		req.True(target.Has("b", 0))
+	})
+
+	t.Run("assign multiple values", func(t *testing.T) {
+		var (
+			req    = require.New(t)
+			target = types.RecordValueSet{}
+		)
+
+		req.Error(assignToComposeRecordValues(&target, []string{"a", "2"}, expr.Must(expr.NewAny([]interface{}{"1", "2"}))))
+		req.Len(target, 0)
+
+		req.NoError(assignToComposeRecordValues(&target, []string{"a"}, expr.Must(expr.NewAny([]interface{}{"1", "2"}))))
+		req.Len(target, 2)
+
+		req.NoError(assignToComposeRecordValues(&target, []string{"a"}, expr.Must(expr.NewAny([]string{"1", "2"}))))
+		req.Len(target, 2)
+	})
 }
