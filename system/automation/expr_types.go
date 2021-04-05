@@ -3,6 +3,7 @@ package automation
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 
 	"github.com/cortezaproject/corteza-server/pkg/expr"
 	"github.com/cortezaproject/corteza-server/system/types"
@@ -10,7 +11,7 @@ import (
 )
 
 type (
-	RenderedDocument struct {
+	renderedDocument struct {
 		Document io.Reader
 		Name     string
 		Type     string
@@ -87,17 +88,17 @@ func CastToTemplateMeta(val interface{}) (out types.TemplateMeta, err error) {
 	}
 }
 
-func CastToDocument(val interface{}) (out *RenderedDocument, err error) {
+func CastToRenderedDocument(val interface{}) (out *renderedDocument, err error) {
 	switch val := val.(type) {
 	case expr.Iterator:
-		out = &RenderedDocument{}
+		out = &renderedDocument{}
 		return out, val.Each(func(k string, v expr.TypedValue) error {
-			return assignToDocument(out, k, v)
+			return assignToRenderedDocument(out, k, v)
 		})
 	}
 
 	switch val := expr.UntypedValue(val).(type) {
-	case *RenderedDocument:
+	case *renderedDocument:
 		return val, nil
 	default:
 		return nil, fmt.Errorf("unable to cast type %T to %T", val, out)
@@ -130,17 +131,7 @@ func CastToRenderOptions(val interface{}) (out map[string]string, err error) {
 	}
 }
 
-func CastToRenderVariables(val interface{}) (out map[string]interface{}, err error) {
-	switch val := expr.UntypedValue(val).(type) {
-	case map[string]interface{}:
-		return val, nil
-	case nil:
-		return make(map[string]interface{}), nil
-	default:
-		out, err = cast.ToStringMapE(val)
-		if err != nil {
-			return nil, fmt.Errorf("unable to cast type %T to %T", val, out)
-		}
-		return out, nil
-	}
+func (doc renderedDocument) String() string {
+	aux, _ := ioutil.ReadAll(doc.Document)
+	return string(aux)
 }

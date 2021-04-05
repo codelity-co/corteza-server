@@ -475,13 +475,16 @@ func (svc record) create(ctx context.Context, new *types.Record) (rec *types.Rec
 		return nil, RecordErrNotAllowedToCreate()
 	}
 
-	if err = RecordValueSanitazion(m, new.Values); err != nil {
+	if err = RecordValueSanitization(m, new.Values); err != nil {
 		return
 	}
 
 	var (
 		rve *types.RecordValueErrorSet
 	)
+
+	// ensure module ref is set before running through records workflows and scripts
+	new.SetModule(m)
 
 	if svc.optEmitEvents {
 		if rve = svc.procCreate(ctx, svc.store, invokerID, m, new); !rve.IsValid() {
@@ -514,6 +517,9 @@ func (svc record) create(ctx context.Context, new *types.Record) (rec *types.Rec
 		return
 	}
 
+	// ensure module ref is set before running through records workflows and scripts
+	new.SetModule(m)
+
 	// At this point we can return the value
 	rec = new
 
@@ -525,7 +531,7 @@ func (svc record) create(ctx context.Context, new *types.Record) (rec *types.Rec
 	return
 }
 
-// RecordValueSanitazion does basic field and format validation
+// RecordValueSanitization does basic field and format validation
 //
 // Received values must fit the data model: on unknown fields
 // or multi/single value mismatch we return an error
@@ -534,7 +540,7 @@ func (svc record) create(ctx context.Context, new *types.Record) (rec *types.Rec
 // we can assume that form builder (or whatever it was that assembled the record values)
 // was misconfigured and will most likely failed to properly parse the
 // record value errors payload too
-func RecordValueSanitazion(m *types.Module, vv types.RecordValueSet) (err error) {
+func RecordValueSanitization(m *types.Module, vv types.RecordValueSet) (err error) {
 	var (
 		aProps  = &recordActionProps{}
 		numeric = regexp.MustCompile(`^[1-9](\d+)$`)
@@ -719,13 +725,17 @@ func (svc record) update(ctx context.Context, upd *types.Record) (rec *types.Rec
 		return nil, RecordErrStaleData()
 	}
 
-	if err = RecordValueSanitazion(m, upd.Values); err != nil {
+	if err = RecordValueSanitization(m, upd.Values); err != nil {
 		return
 	}
 
 	var (
 		rve *types.RecordValueErrorSet
 	)
+
+	// ensure module ref is set before running through records workflows and scripts
+	upd.SetModule(m)
+	old.SetModule(m)
 
 	if svc.optEmitEvents {
 		// Handle input payload
@@ -763,6 +773,10 @@ func (svc record) update(ctx context.Context, upd *types.Record) (rec *types.Rec
 	if err != nil {
 		return nil, err
 	}
+
+	// ensure module ref is set before running through records workflows and scripts
+	upd.SetModule(m)
+	old.SetModule(m)
 
 	// Final value cleanup
 	// These (clean) values are returned (and sent to after-update handler)
@@ -847,6 +861,13 @@ func (svc record) procUpdate(ctx context.Context, s store.Storer, invokerID uint
 	// Mark all values as updated (new)
 	upd.Values.SetUpdatedFlag(true)
 
+	// First sanitization
+	//
+	// Before values are merged with existing data and
+	// sent to automation scripts (if any)
+	// we need to make sure it does not get sanitized data
+	upd.Values = svc.sanitizer.Run(m, upd.Values)
+
 	// Copy values to updated record
 	// to make sure nobody slips in something we do not want
 	upd.CreatedAt = old.CreatedAt
@@ -897,6 +918,9 @@ func (svc record) delete(ctx context.Context, namespaceID, moduleID, recordID ui
 		return nil, RecordErrNotAllowedToDelete()
 	}
 
+	// ensure module ref is set before running through records workflows and scripts
+	del.SetModule(m)
+
 	if svc.optEmitEvents {
 		// Calling before-record-delete scripts
 		if err = svc.eventbus.WaitFor(ctx, event.RecordBeforeDelete(nil, del, m, ns, nil)); err != nil {
@@ -914,6 +938,9 @@ func (svc record) delete(ctx context.Context, namespaceID, moduleID, recordID ui
 	if err != nil {
 		return nil, err
 	}
+
+	// ensure module ref is set before running through records workflows and scripts
+	del.SetModule(m)
 
 	if svc.optEmitEvents {
 		_ = svc.eventbus.WaitFor(ctx, event.RecordAfterDeleteImmutable(nil, del, m, ns, nil))

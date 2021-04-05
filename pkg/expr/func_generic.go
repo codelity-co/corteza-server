@@ -12,6 +12,7 @@ func GenericFunctions() []gval.Language {
 		gval.Function("coalesce", coalesce),
 		gval.Function("isEmpty", isEmpty),
 		gval.Function("isNil", isNil),
+		gval.Function("length", length),
 	}
 }
 
@@ -23,6 +24,19 @@ func coalesce(aa ...interface{}) interface{} {
 	}
 
 	return nil
+}
+
+func length(i interface{}) int {
+	if isEmpty(i) {
+		return 0
+	}
+
+	switch reflect.TypeOf(i).Kind() {
+	case reflect.Slice, reflect.Array, reflect.Ptr, reflect.Map, reflect.String:
+		return reflect.ValueOf(i).Len()
+	}
+
+	return 0
 }
 
 func isNil(i interface{}) bool {
@@ -44,7 +58,7 @@ func isEmpty(i interface{}) bool {
 	}
 
 	switch reflect.TypeOf(i).Kind() {
-	case reflect.Slice, reflect.Array, reflect.Ptr, reflect.Map:
+	case reflect.Slice, reflect.Array, reflect.Map:
 		return reflect.ValueOf(i).Len() == 0
 	}
 

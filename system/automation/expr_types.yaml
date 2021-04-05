@@ -55,13 +55,11 @@ types:
     struct:
       - { name: 'short',       exprType: 'String', goType: 'string'}
       - { name: 'description', exprType: 'String', goType: 'string'}
-  Document:
-   as: '*RenderedDocument'
+  RenderedDocument:
+   as: '*renderedDocument'
    struct:
       - { name: 'document', exprType: 'Reader', goType: 'io.Reader' }
       - { name: 'name',     exprType: 'string', goType: 'string' }
       - { name: 'type',     exprType: 'string', goType: 'string' }
-  RenderVariables:
-    as: 'map[string]interface{}'
   RenderOptions:
     as: 'map[string]string'

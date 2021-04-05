@@ -3,7 +3,6 @@ package expr
 import (
 	"context"
 	"fmt"
-
 	"github.com/PaesslerAG/gval"
 )
 
@@ -67,11 +66,16 @@ func (p *gvalParser) ParseEvaluators(ee ...Evaluator) error {
 }
 
 func (e *gvalEval) Eval(ctx context.Context, scope *Vars) (interface{}, error) {
-	return e.evaluable(ctx, scope.Dict())
+	return e.evaluable(ctx, scope)
 }
 
 func (e *gvalEval) Test(ctx context.Context, scope *Vars) (bool, error) {
-	return e.evaluable.EvalBool(ctx, scope.Dict())
+	r, err := e.evaluable(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+
+	return !isEmpty(r), nil
 }
 
 func Parser(ll ...gval.Language) gval.Language {

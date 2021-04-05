@@ -147,7 +147,7 @@ func (svc *workflow) Search(ctx context.Context, filter types.WorkflowFilter) (r
 		return nil
 	}()
 
-	return rr, filter, svc.recordAction(ctx, wap, WorkflowActionSearch, err)
+	return rr, f, svc.recordAction(ctx, wap, WorkflowActionSearch, err)
 }
 
 func (svc *workflow) LookupByID(ctx context.Context, workflowID uint64) (wf *types.Workflow, err error) {
@@ -506,6 +506,10 @@ func (svc *workflow) Exec(ctx context.Context, workflowID uint64, p types.Workfl
 			return WorkflowErrNotAllowedToExecute()
 		}
 
+		if !wf.Enabled && !p.Trace {
+			return WorkflowErrDisabled()
+		}
+
 		g, convErr := Convert(svc, wf)
 		if len(convErr) > 0 {
 			return convErr
@@ -531,6 +535,10 @@ func (svc *workflow) Exec(ctx context.Context, workflowID uint64, p types.Workfl
 
 			return nil, nil
 		}()
+
+		if !t.Enabled && !p.Trace {
+			return WorkflowErrDisabled()
+		}
 
 		// Start with workflow scope
 		scope := wf.Scope.Merge()

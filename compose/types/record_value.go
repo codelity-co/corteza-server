@@ -5,10 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/cortezaproject/corteza-server/pkg/filter"
-	"github.com/cortezaproject/corteza-server/pkg/payload"
 	"github.com/pkg/errors"
+	"github.com/spf13/cast"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -50,6 +49,40 @@ func (v RecordValue) Clone() *RecordValue {
 		DeletedAt: v.DeletedAt,
 		Updated:   v.Updated,
 		OldValue:  v.OldValue,
+	}
+}
+
+func (v RecordValue) Cast(f *ModuleField) (interface{}, error) {
+	if f == nil {
+		// safe fallback to string
+		return v.Value, nil
+	}
+
+	switch {
+	case f.IsRef():
+		if v.Ref == 0 && len(v.Value) > 0 {
+			// Cover cases when we Ref is not set but Value is
+			// This happens when RVS is transferred as JSON
+			v.Ref, _ = strconv.ParseUint(v.Value, 10, 64)
+		}
+
+		return v.Ref, nil
+
+	case f.IsDateTime():
+		return cast.ToTimeE(v.Value)
+
+	case f.IsBoolean():
+		return cast.ToBoolE(v.Value)
+
+	case f.IsNumeric():
+		if f.Options.Precision() == 0 {
+			return cast.ToInt64E(v.Value)
+		}
+
+		return cast.ToFloat64E(v.Value)
+
+	default:
+		return v.Value, nil
 	}
 }
 
@@ -337,23 +370,6 @@ func (set RecordValueSet) String() (o string) {
 func (set RecordValueSet) Dict(fields ModuleFieldSet) map[string]interface{} {
 	var (
 		rval = make(map[string]interface{})
-
-		format = func(f *ModuleField, v string) interface{} {
-			switch strings.ToLower(f.Kind) {
-			case "bool":
-				return payload.ParseBool(v)
-			case "number":
-				if f.Options.Precision() > 0 {
-					num, _ := strconv.ParseFloat(v, 64)
-					return num
-				}
-
-				num, _ := strconv.ParseInt(v, 10, 64)
-				return num
-			}
-
-			return v
-		}
 	)
 
 	if len(fields) == 0 {
@@ -361,17 +377,20 @@ func (set RecordValueSet) Dict(fields ModuleFieldSet) map[string]interface{} {
 	}
 
 	_ = fields.Walk(func(f *ModuleField) error {
+		// make sure all fields are set at least to nil
+		rval[f.Name] = nil
+
 		if f.Multi {
 			var (
 				rv = set.FilterByName(f.Name)
 				vv = make([]interface{}, len(rv))
 			)
 			for i, val := range rv {
-				vv[i] = format(f, val.Value)
+				vv[i], _ = val.Cast(f)
 			}
 			rval[f.Name] = vv
 		} else if v := set.Get(f.Name, 0); v != nil {
-			rval[f.Name] = format(f, v.Value)
+			rval[f.Name], _ = v.Cast(f)
 		}
 
 		return nil

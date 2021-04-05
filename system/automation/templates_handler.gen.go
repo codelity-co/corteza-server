@@ -746,14 +746,14 @@ type (
 		DocumentType    string
 
 		hasVariables bool
-		Variables    map[string]interface{}
+		Variables    *expr.Vars
 
 		hasOptions bool
 		Options    map[string]string
 	}
 
 	templatesRenderResults struct {
-		Document *RenderedDocument
+		Document *renderedDocument
 	}
 )
 
@@ -791,7 +791,7 @@ func (h templatesHandler) Render() *atypes.Function {
 			},
 			{
 				Name:  "variables",
-				Types: []string{"RenderVariables"},
+				Types: []string{"Vars"},
 			},
 			{
 				Name:  "options",
@@ -803,7 +803,7 @@ func (h templatesHandler) Render() *atypes.Function {
 
 			{
 				Name:  "document",
-				Types: []string{"Document"},
+				Types: []string{"RenderedDocument"},
 			},
 		},
 
@@ -843,12 +843,12 @@ func (h templatesHandler) Render() *atypes.Function {
 			out = &expr.Vars{}
 
 			{
-				// converting results.Document (*RenderedDocument) to Document
+				// converting results.Document (*renderedDocument) to RenderedDocument
 				var (
 					tval expr.TypedValue
 				)
 
-				if tval, err = h.reg.Type("Document").Cast(results.Document); err != nil {
+				if tval, err = h.reg.Type("RenderedDocument").Cast(results.Document); err != nil {
 					return
 				} else if err = expr.Assign(out, "document", tval); err != nil {
 					return

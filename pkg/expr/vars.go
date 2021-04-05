@@ -1,6 +1,7 @@
 package expr
 
 import (
+	"context"
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
@@ -10,16 +11,6 @@ import (
 	"reflect"
 	"strings"
 )
-
-type (
-	// RVars or raw-vars, used as internal type for Vars expr type
-	RVars map[string]TypedValue
-)
-
-// Vars is a utility func that returns RVars wrapped in Vars
-func (v RVars) Vars() *Vars {
-	return &Vars{value: v}
-}
 
 func (t Vars) Len() int {
 	return len(t.value)
@@ -35,7 +26,7 @@ func (t Vars) Select(k string) (TypedValue, error) {
 
 func (t *Vars) AssignFieldValue(key string, val TypedValue) (err error) {
 	if t.value == nil {
-		t.value = make(RVars)
+		t.value = make(map[string]TypedValue)
 	}
 
 	t.value[key] = val
@@ -69,7 +60,7 @@ func (t Vars) ResolveTypes(res func(typ string) Type) (err error) {
 // Assign takes base variables and assigns all new variables
 func (t *Vars) Merge(nn ...Iterator) *Vars {
 	var (
-		out = &Vars{value: make(RVars)}
+		out = &Vars{value: make(map[string]TypedValue)}
 	)
 
 	nn = append([]Iterator{t}, nn...)
@@ -91,7 +82,7 @@ func (t *Vars) Copy(dst *Vars, kk ...string) {
 	}
 
 	if dst.value == nil {
-		dst.value = make(RVars)
+		dst.value = make(map[string]TypedValue)
 	}
 
 	for _, k := range kk {
@@ -134,22 +125,22 @@ func (t *Vars) HasAny(key string, kk ...string) bool {
 	return false
 }
 
-func (t *Vars) Dict() map[string]interface{} {
-	if t == nil {
-		return nil
-	}
+var _ gval.Selector = &Vars{}
 
+func (t *Vars) Dict() map[string]interface{} {
 	dict := make(map[string]interface{})
 	for k, v := range t.value {
 		switch v := v.(type) {
-		case gval.Selector:
-			dict[k] = v
-
 		case Dict:
 			dict[k] = v.Dict()
 
 		case TypedValue:
-			dict[k] = v.Get()
+			tmp := v.Get()
+			if d, is := tmp.(Dict); is {
+				dict[k] = d.Dict()
+			} else {
+				dict[k] = tmp
+			}
 
 		default:
 			dict[k] = v
@@ -225,22 +216,32 @@ func (t *Vars) Value() (driver.Value, error) {
 	return json.Marshal(t)
 }
 
+func (t Vars) SelectGVal(_ context.Context, k string) (interface{}, error) {
+	val, err := t.Select(k)
+	switch c := val.(type) {
+	case gval.Selector:
+		return c, nil
+	default:
+		return UntypedValue(val), err
+	}
+}
+
 // UnmarshalJSON
 func (t *Vars) UnmarshalJSON(in []byte) (err error) {
-	if len(in) == 0 {
-		return nil
-	}
-
 	var (
 		aux = make(map[string]*typedValueWrap)
 	)
 
-	if err = json.Unmarshal(in, &aux); err != nil {
-		return
+	if t.value == nil {
+		t.value = make(map[string]TypedValue)
 	}
 
-	if t.value == nil && len(aux) > 0 {
-		t.value = make(map[string]TypedValue)
+	if len(in) == 0 {
+		return nil
+	}
+
+	if err = json.Unmarshal(in, &aux); err != nil {
+		return
 	}
 
 	for k, v := range aux {
@@ -263,6 +264,15 @@ func (t *Vars) Each(fn func(k string, v TypedValue) error) (err error) {
 		}
 	}
 
+	return
+}
+
+func (t *Vars) Set(k string, v interface{}) (err error) {
+	if t.value == nil {
+		t.value = make(map[string]TypedValue)
+	}
+
+	t.value[k], err = Typify(v)
 	return
 }
 
@@ -302,8 +312,12 @@ func decode(dst reflect.Value, src TypedValue) (err error) {
 		return
 	}
 
-	raw := UntypedValue(src)
+	if reflect.ValueOf(src).Type().ConvertibleTo(dst.Type()) {
+		dst.Set(reflect.ValueOf(src))
+		return
+	}
 
+	raw := UntypedValue(src)
 	// Optimistically try to decode source to destination by comparing (internal) value type for destination
 	if reflect.ValueOf(raw).Type().ConvertibleTo(dst.Type()) {
 		dst.Set(reflect.ValueOf(raw))
@@ -344,6 +358,9 @@ func decode(dst reflect.Value, src TypedValue) (err error) {
 			dst.SetString(vString)
 		}
 
+	case reflect.Map:
+		dst.Set(reflect.ValueOf(src.Get()))
+
 	//case reflect.Interface:
 	//	dst.Set(reflect.ValueOf(raw))
 
@@ -358,18 +375,28 @@ func decode(dst reflect.Value, src TypedValue) (err error) {
 	return nil
 }
 
-func CastToVars(val interface{}) (out RVars, err error) {
+func CastToVars(val interface{}) (out map[string]TypedValue, err error) {
 	val = UntypedValue(val)
 
 	if val == nil {
-		return make(RVars), nil
+		return make(map[string]TypedValue), nil
 	}
 
 	switch c := val.(type) {
 	case *Vars:
 		return c.value, nil
-	case RVars:
+	case map[string]TypedValue:
 		return c, nil
+	case map[string]interface{}:
+		out = make(map[string]TypedValue)
+		for k, v := range c {
+			out[k], err = Typify(v)
+			if err != nil {
+				return
+			}
+		}
+
+		return
 	}
 
 	return nil, fmt.Errorf("unable to cast type %T to %T", val, out)

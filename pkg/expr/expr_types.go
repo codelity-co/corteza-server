@@ -5,15 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/cortezaproject/corteza-server/pkg/errors"
-	"github.com/cortezaproject/corteza-server/pkg/handle"
-	"github.com/spf13/cast"
 	"io"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/cortezaproject/corteza-server/pkg/errors"
+	"github.com/cortezaproject/corteza-server/pkg/handle"
+	"github.com/spf13/cast"
 )
 
 type (
@@ -23,21 +24,22 @@ type (
 	}
 )
 
+func EmptyVars() *Vars {
+	return &Vars{value: map[string]TypedValue{}}
+}
+
 func ResolveTypes(rt resolvableType, resolver func(typ string) Type) error {
 	return rt.ResolveTypes(resolver)
 }
 
-// cast intput into some well-known types
-func Cast(in interface{}) (tv TypedValue, err error) {
+// Typify detects input type and wraps it with expression type
+func Typify(in interface{}) (tv TypedValue, err error) {
 	var is bool
 	if tv, is = in.(TypedValue); is {
 		return
 	}
 
 	switch c := in.(type) {
-	// @todo
-	//case map[string]interface{}:
-	//	return NewVars()
 	case []TypedValue:
 		return &Array{value: c}, nil
 	case bool:
@@ -74,6 +76,14 @@ func Cast(in interface{}) (tv TypedValue, err error) {
 		return &Duration{value: *c}, nil
 	case time.Duration:
 		return &Duration{value: c}, nil
+	case map[string]interface{}:
+		if v, err := CastToVars(c); err != nil {
+			return nil, err
+		} else {
+			return &Vars{v}, nil
+		}
+	case map[string]TypedValue:
+		return &Vars{c}, nil
 	case map[string]string:
 		return &KV{value: c}, nil
 	case map[string][]string:
@@ -134,7 +144,7 @@ func CastToArray(val interface{}) (out []TypedValue, err error) {
 		out = make([]TypedValue, ref.Len())
 		for i := 0; i < ref.Len(); i++ {
 			item := ref.Index(i).Interface()
-			out[i], err = Cast(item)
+			out[i], err = Typify(item)
 			if err != nil {
 				return
 			}
@@ -212,6 +222,11 @@ func (t Array) Has(k string) bool {
 	}
 }
 
+// Push appends value to array
+func (t *Array) Push(v TypedValue) {
+	t.value = append(t.value, v)
+}
+
 // Select is field accessor for *types.Array
 //
 // Similar to SelectGVal but returns typed values
@@ -223,16 +238,35 @@ func (t Array) Select(k string) (TypedValue, error) {
 	}
 }
 
+// emptyStringFailsafe returns 0 on empty strings
+func emptyStringFailsafe(val interface{}) interface{} {
+	val = UntypedValue(val)
+	if aux, is := val.(string); is && len(strings.TrimSpace(aux)) == 0 {
+		return 0
+	} else {
+		return val
+	}
+}
+
 func (t ID) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fmt.Sprintf("%d", t.value))
 }
 
 func CastToBoolean(val interface{}) (out bool, err error) {
-	return cast.ToBoolE(UntypedValue(val))
+	val = UntypedValue(val)
+	if aux, is := val.(string); is && len(strings.TrimSpace(aux)) == 0 {
+		return false, nil
+	}
+
+	return cast.ToBoolE(val)
 }
 
 func CastToString(val interface{}) (out string, err error) {
 	return cast.ToStringE(UntypedValue(val))
+}
+
+func CastStringSlice(val interface{}) (out []string, err error) {
+	return cast.ToStringSliceE(UntypedValue(val))
 }
 
 func CastToHandle(val interface{}) (string, error) {
@@ -248,7 +282,7 @@ func CastToHandle(val interface{}) (string, error) {
 }
 
 func CastToDuration(val interface{}) (out time.Duration, err error) {
-	return cast.ToDurationE(UntypedValue(val))
+	return cast.ToDurationE(emptyStringFailsafe(val))
 }
 
 func CastToDateTime(val interface{}) (out *time.Time, err error) {
@@ -269,21 +303,19 @@ func CastToDateTime(val interface{}) (out *time.Time, err error) {
 }
 
 func CastToFloat(val interface{}) (out float64, err error) {
-	return cast.ToFloat64E(UntypedValue(val))
+	return cast.ToFloat64E(emptyStringFailsafe(val))
 }
 
 func CastToID(val interface{}) (out uint64, err error) {
-	out, err = cast.ToUint64E(UntypedValue(val))
-
-	return
+	return cast.ToUint64E(emptyStringFailsafe(val))
 }
 
 func CastToInteger(val interface{}) (out int64, err error) {
-	return cast.ToInt64E(UntypedValue(val))
+	return cast.ToInt64E(emptyStringFailsafe(val))
 }
 
 func CastToUnsignedInteger(val interface{}) (out uint64, err error) {
-	return cast.ToUint64E(UntypedValue(val))
+	return cast.ToUint64E(emptyStringFailsafe(val))
 }
 
 func (t *KV) Has(k string) bool {
